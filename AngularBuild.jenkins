@@ -1,0 +1,167 @@
+pipeline {
+  agent none
+  environment {
+    GIT_BRANCH="development"
+    INSTALL_APP="Nightscout Reporter (Development)"
+    CREDENTIAL_GIT="GITHUB-ZREPTIL"
+    CREDENTIAL_FTP="FTP-ZREPTIL"
+    DEPLOYMENT_URL="https://nightrep-dev.zreptil.de"
+    SERVER_URL="https://nightrep-dev.zreptil.de"
+    skipRemainingStages="false"
+    GIT_REPO_URL="https://github.com/zreptil/nightscout-reporter-angular"
+    ACTUAL_WORKSPACE=""
+    ARTIFACT_DIR="artifact"
+    EMAIL_TO="jenkins@zreptil.de"
+  }
+
+  stages {
+    stage('INIT') {
+      agent {
+        any {
+          reuseNode false
+        }
+      }
+      steps {
+        script {
+          ACTUAL_WORKSPACE = WORKSPACE
+        }
+      }
+    }
+
+    stage('GIT Clone') {
+      agent {
+        any {
+          reuseNode true
+        }
+      }
+      steps {
+        script {
+          if ("${GIT_BRANCH}" == ""){
+            currentBuild.result = 'UNSTABLE'
+            skipRemainingStages = 'true'
+            return
+          } //if
+        }
+        checkout([
+            $class: 'GitSCM',
+            branches: [[name: "*/${GIT_BRANCH}"]],
+            doGenerateSubmoduleConfigurations: false,
+            submoduleCfg: [],
+            userRemoteConfigs: [[
+                credentialsId: CREDENTIAL_GIT,
+                url: "${GIT_REPO_URL}"
+            ]]
+        ])
+      }
+    }
+    stage('Build Frontend') {
+      when { expression {skipRemainingStages == 'false'} }
+      agent {
+        any {
+          reuseNode true
+        }
+      }
+      steps {
+        dir(ACTUAL_WORKSPACE) {
+          nvm('v18.12.1') {
+            sh '''
+            npm install --unsafe-perm
+            npm audit fix
+            npm run build
+            '''
+          }
+        }
+      }
+    }
+    stage ('Create Artifacts Folder') {
+      when { expression {skipRemainingStages == 'false'} }
+      agent {
+        any {
+          reuseNode true
+        }
+      }
+      steps {
+        dir(ACTUAL_WORKSPACE) {
+          // Create Directory structure
+          sh '''
+          rm -rf ${ARTIFACT_DIR}
+          mkdir -p ${ARTIFACT_DIR}
+          '''
+        }
+      }
+    }
+    stage ('Copy build artifacts') {
+      when { expression {skipRemainingStages == 'false'} }
+      agent {
+        any {
+          reuseNode true
+        }
+      }
+      steps {
+        dir(ACTUAL_WORKSPACE) {
+          // Copy Frontend
+          sh '''
+          cp -r dist/nightrep ${ARTIFACT_DIR}/
+          '''
+        }
+      }
+    }
+    stage('Install Frontend') {
+      agent {
+        any {
+          reuseNode true
+        }
+      }
+      steps{
+        ftpPublisher alwaysPublishFromMaster: false,
+                     continueOnError: false,
+                     failOnError: true,
+                     masterNodeName: '',
+                     paramPublish: null,
+                     publishers: [[
+                         configName: 'nightrep-dev',
+                         transfers: [[
+                             asciiMode: false,
+                             cleanRemote: false,
+                             excludes: '',
+                             flatten: false,
+                             makeEmptyDirs: false,
+                             noDefaultExcludes: false,
+                             patternSeparator: '[, ]+',
+                             remoteDirectory: '',
+                             remoteDirectorySDF: false,
+                             removePrefix: 'artifact/nightrep',
+                             sourceFiles: 'artifact/nightrep/**/*.*'
+                             ]],
+                         usePromotionTimestamp: false,
+                         useWorkspaceInPromotion: false,
+                         verbose: false
+                     ]]
+        }
+    }
+  }
+
+  post {
+    success {
+      emailext subject: "Success: ${INSTALL_APP}", \
+        to: EMAIL_TO, \
+        body: "Die neue Version von ${INSTALL_APP} wurde erfolgreich installiert.\n\nSie ist unter\n\n${SERVER_URL}\n\naufrufbar.", \
+        attachLog: true
+    }
+
+    unsuccessful {
+        echo "war nix"
+//      emailext subject: "Failure: Jenkins ${INSTALL_APP}", \
+//        to: EMAIL_TO, \
+//        body: "Die ${INSTALL_APP} Version wurde nicht erfolgreich installiert. Fehler im Anhang.", \
+//        attachLog: true
+    }
+
+    unstable {
+      emailext subject: "Unstable: Jenkins ${INSTALL_APP}", \
+        to: EMAIL_TO, \
+        body: "Die ${INSTALL_APP} Version wurde nicht erfolgreich installiert. Ist der richtige Branch gesetzt?", \
+        attachLog: true
+    }
+  }
+}
